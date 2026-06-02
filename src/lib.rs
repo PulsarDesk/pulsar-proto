@@ -150,7 +150,10 @@ pub enum ClientMsg {
 /// Messages sent **relay → client**.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RelayMsg {
-	Registered { id: DeviceId, token: Token },
+	Registered {
+		id: DeviceId,
+		token: Token,
+	},
 	HeartbeatAck,
 	/// Delivered to the **target**: someone wants to connect. Includes the
 	/// requester's public address so the target can start hole-punching.
@@ -169,8 +172,14 @@ pub enum RelayMsg {
 		answer: Vec<u8>,
 	},
 	/// A payload tunnelled from the peer (relay-fallback path).
-	RelayData { session: SessionId, payload: Vec<u8> },
-	Error { code: ErrCode, message: String },
+	RelayData {
+		session: SessionId,
+		payload: Vec<u8>,
+	},
+	Error {
+		code: ErrCode,
+		message: String,
+	},
 }
 
 /// Messages sent **peer ↔ peer** directly (after hole punching), or wrapped in
@@ -178,16 +187,24 @@ pub enum RelayMsg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PeerMsg {
 	/// Hole-punch probe.
-	Punch { session: SessionId, seq: u32 },
+	Punch {
+		session: SessionId,
+		seq: u32,
+	},
 	/// Hole-punch reply — receiving one confirms the direct path works.
-	PunchAck { session: SessionId, seq: u32 },
+	PunchAck {
+		session: SessionId,
+		seq: u32,
+	},
 	/// Encrypted media/control payload.
 	Data {
 		session: SessionId,
 		seq: u64,
 		payload: Vec<u8>,
 	},
-	KeepAlive { session: SessionId },
+	KeepAlive {
+		session: SessionId,
+	},
 }
 
 /// Encode any protocol message to bytes (one datagram).
