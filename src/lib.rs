@@ -14,13 +14,24 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 /// Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// v2: handshake blobs now carry a 32-byte per-session salt alongside the static
+/// X25519 public key (relay-path `hello`/`answer` blobs become `pubkey || salt`;
+/// direct-IP `Hello`/`HelloAck` gain a `salt` field). This binds the data key to
+/// the specific session and fixes cross-session key/nonce reuse — both ends must
+/// run v2 code (they are rebuilt together).
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Conservative MTU-safe datagram payload size.
 pub const MAX_DATAGRAM: usize = 1400;
 
 /// The relay's default UDP port (mirrors the design's `:21116`).
 pub const DEFAULT_RELAY_PORT: u16 = 21116;
+
+/// Default UDP port a host advertises for direct (relay-less) IP connects when the
+/// typed target is a bare IP with no port and the peer isn't in the LAN beacon.
+/// Sits next to the relay (:21116) and discovery (:21117).
+pub const DEFAULT_NODE_PORT: u16 = 21118;
 
 /// A 9-digit device identity assigned by the relay, e.g. `482913056`
 /// (shown to users grouped as `482 913 056`).
@@ -205,6 +216,21 @@ pub enum PeerMsg {
 	KeepAlive {
 		session: SessionId,
 	},
+	/// Direct-IP handshake (relay-less): initiator announces its X25519 public key
+	/// plus a fresh per-session salt (mixed into the data key so reconnects don't
+	/// reuse a key).
+	Hello {
+		session: SessionId,
+		pubkey: PublicKey,
+		salt: [u8; 32],
+	},
+	/// Direct-IP handshake reply: responder returns its public key + its own fresh
+	/// salt so both sides derive the same per-session key, then hole-punch as usual.
+	HelloAck {
+		session: SessionId,
+		pubkey: PublicKey,
+		salt: [u8; 32],
+	},
 }
 
 /// Encode any protocol message to bytes (one datagram).
@@ -334,6 +360,16 @@ mod tests {
 				payload: vec![0xAB; 512],
 			},
 			PeerMsg::KeepAlive { session: 1 },
+			PeerMsg::Hello {
+				session: 1,
+				pubkey: [9u8; 32],
+				salt: [3u8; 32],
+			},
+			PeerMsg::HelloAck {
+				session: 1,
+				pubkey: [8u8; 32],
+				salt: [4u8; 32],
+			},
 		];
 		for m in msgs {
 			assert_eq!(decode::<PeerMsg>(&encode(&m)).unwrap(), m);
