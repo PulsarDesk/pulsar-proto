@@ -56,9 +56,15 @@ impl DeviceId {
 		Self(rng.gen_range(Self::MIN..=Self::MAX))
 	}
 
-	/// Grouped display form: `482 913 056`.
+	/// Grouped display form: `482 913 056`. Derived `Deserialize` performs no range
+	/// validation, so wire data can carry an out-of-range id (e.g. `DeviceId(5)`) —
+	/// fall back to the plain number instead of panicking on the 9-digit slicing
+	/// (the `Debug` impl calls this on every decoded message that gets logged).
 	pub fn grouped(&self) -> String {
 		let s = self.0.to_string();
+		if !(Self::MIN..=Self::MAX).contains(&self.0) {
+			return s;
+		}
 		format!("{} {} {}", &s[0..3], &s[3..6], &s[6..9])
 	}
 
@@ -254,6 +260,15 @@ mod tests {
 		assert_eq!(DeviceId::parse("482 913 056"), Some(id));
 		assert_eq!(DeviceId::parse("482913056"), Some(id));
 		assert_eq!(DeviceId::parse("ID 482-913-056!"), Some(id));
+	}
+
+	#[test]
+	fn grouped_survives_out_of_range_wire_ids() {
+		// Deserialize doesn't validate the range, so a crafted datagram can produce
+		// e.g. DeviceId(5) — grouped()/Debug must fall back, not panic on slicing.
+		assert_eq!(DeviceId(5).grouped(), "5");
+		assert_eq!(DeviceId(1_000_000_000).grouped(), "1000000000");
+		assert_eq!(format!("{:?}", DeviceId(5)), "DeviceId(5)");
 	}
 
 	#[test]
