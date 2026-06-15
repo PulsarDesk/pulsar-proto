@@ -102,6 +102,19 @@ impl Token {
 	pub fn to_hex(self) -> String {
 		self.0.iter().map(|b| format!("{b:02x}")).collect()
 	}
+
+	/// Constant-time equality. Unlike the derived `PartialEq` (a byte-wise
+	/// compare that short-circuits at the first mismatch), this examines every
+	/// byte regardless of where they differ, so the time taken does not leak how
+	/// many leading bytes matched. Use this — not `==` — for authentication
+	/// checks where an attacker can observe reply timing.
+	pub fn ct_eq(&self, other: &Token) -> bool {
+		let mut diff = 0u8;
+		for i in 0..self.0.len() {
+			diff |= self.0[i] ^ other.0[i];
+		}
+		diff == 0
+	}
 }
 
 impl std::fmt::Debug for Token {
@@ -124,6 +137,12 @@ pub enum ErrCode {
 	NotRegistered,
 	Protocol,
 	RelayFull,
+	/// The client's [`ClientMsg::Register`] `version` is incompatible with the
+	/// relay's [`PROTOCOL_VERSION`]. Registration is refused so a version mismatch
+	/// surfaces as a clear "update required" error instead of a later, misleading
+	/// rendezvous/handshake timeout. Appended last so existing variant indices
+	/// (bincode serializes enums by index) stay stable on the wire.
+	IncompatibleVersion,
 }
 
 /// Messages sent **client → relay**.
