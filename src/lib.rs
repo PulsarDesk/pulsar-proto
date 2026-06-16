@@ -383,6 +383,67 @@ mod tests {
 		}
 	}
 
+	/// Wire-compat regression: a relay that rejects an old-protocol client MUST send a
+	/// `RelayMsg::Error` whose `ErrCode` variant is decodable by the old client.
+	///
+	/// Before this fix the relay sent `ErrCode::IncompatibleVersion` (variant index 5).
+	/// Old clients only know indices 0..=4; bincode returns a hard error on index 5 and
+	/// `handle_datagram` silently drops the datagram — the "update required" path is
+	/// never reached, and the client hangs until `REGISTER_TIMEOUT`.
+	///
+	/// The correct reply uses `ErrCode::Protocol` (variant index 3), which every build
+	/// can decode. We prove this here by encoding with a 6-variant enum (the current
+	/// `ErrCode`) and decoding with a 5-variant mirror (simulating an old client).
+	#[test]
+	fn version_mismatch_error_decodable_by_old_client() {
+		// Encode a `RelayMsg::Error { code: Protocol, message: "incompatible protocol version" }`
+		// using the current (6-variant) ErrCode — this is exactly what the relay now sends.
+		let wire = encode(&RelayMsg::Error {
+			code: ErrCode::Protocol,
+			message: "incompatible protocol version".into(),
+		});
+
+		// A 5-variant mirror of ErrCode that matches what pre-IncompatibleVersion builds
+		// compiled against. Bincode decodes by variant index, so the indices 0..=4 map
+		// identically — `Protocol` is index 3 in both the old 5-variant and the new
+		// 6-variant enum, and must decode without error.
+		#[derive(Debug, PartialEq, serde::Deserialize)]
+		enum OldErrCode {
+			TargetOffline,
+			BadToken,
+			NotRegistered,
+			Protocol,
+			RelayFull,
+		}
+		#[derive(Debug, PartialEq, serde::Deserialize)]
+		enum OldRelayMsg {
+			Registered { id: DeviceId, token: Token },
+			HeartbeatAck,
+			Incoming { from: DeviceId, from_addr: std::net::SocketAddr, session: SessionId, hello: Vec<u8> },
+			PeerFound { target: DeviceId, target_addr: std::net::SocketAddr, session: SessionId, answer: Vec<u8> },
+			RelayData { session: SessionId, payload: Vec<u8> },
+			Error { code: OldErrCode, message: String },
+		}
+
+		let decoded = decode::<OldRelayMsg>(&wire)
+			.expect("old-client ErrCode (5 variants) must decode Protocol (index 3) without error");
+		assert!(
+			matches!(decoded, OldRelayMsg::Error { code: OldErrCode::Protocol, .. }),
+			"expected Protocol error, got {decoded:?}"
+		);
+
+		// Confirm the PREVIOUS (buggy) behaviour: IncompatibleVersion (index 5) is
+		// undecodable by a 5-variant enum — this would have been what the old client saw.
+		let buggy_wire = encode(&RelayMsg::Error {
+			code: ErrCode::IncompatibleVersion,
+			message: "incompatible protocol version".into(),
+		});
+		assert!(
+			decode::<OldRelayMsg>(&buggy_wire).is_err(),
+			"ErrCode index 5 must be an error for a 5-variant enum (proves the pre-fix bug)"
+		);
+	}
+
 	#[test]
 	fn peer_messages_round_trip() {
 		let msgs = vec![
