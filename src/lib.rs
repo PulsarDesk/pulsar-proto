@@ -20,7 +20,14 @@ use std::net::SocketAddr;
 /// direct-IP `Hello`/`HelloAck` gain a `salt` field). This binds the data key to
 /// the specific session and fixes cross-session key/nonce reuse — both ends must
 /// run v2 code (they are rebuilt together).
-pub const PROTOCOL_VERSION: u16 = 2;
+///
+/// v3: [`RelayMsg::PeerFound`] carries `rate_cap_kbps` — the relay's per-session
+/// forwarding rate cap (0 = unlimited), so a relayed client can start its encoder at
+/// or below the cap instead of blasting its full target into a throttled pipe and
+/// waiting for the loss-driven ABR to converge down. bincode is positional, so the
+/// added field is an incompatible wire change → both ends must run v3 (rebuilt
+/// together; the relay rejects a mismatched-version Register up front).
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Conservative MTU-safe datagram payload size.
 pub const MAX_DATAGRAM: usize = 1400;
@@ -206,6 +213,13 @@ pub enum RelayMsg {
 		target_addr: SocketAddr,
 		session: SessionId,
 		answer: Vec<u8>,
+		/// The relay's PER-SESSION forwarding rate cap in **kbit/s** (`0` = unlimited /
+		/// not configured). When non-zero, the requester clamps its stream's target
+		/// bitrate to (a headroom-discounted) cap so a relayed session starts within the
+		/// pipe instead of overshooting and waiting for the loss-driven ABR to ramp down.
+		/// Only the relay-fallback path carries a meaningful value; a direct/P2P session
+		/// is uncapped (`0`). v3 wire addition (see [`PROTOCOL_VERSION`]).
+		rate_cap_kbps: u32,
 	},
 	/// A payload tunnelled from the peer (relay-fallback path).
 	RelayData {
@@ -372,6 +386,7 @@ mod tests {
 				target_addr: addr,
 				session: 7,
 				answer: vec![6, 7],
+				rate_cap_kbps: 10_000,
 			},
 			RelayMsg::Error {
 				code: ErrCode::TargetOffline,
