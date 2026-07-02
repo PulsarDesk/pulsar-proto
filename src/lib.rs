@@ -432,18 +432,43 @@ mod tests {
 		}
 		#[derive(Debug, PartialEq, serde::Deserialize)]
 		enum OldRelayMsg {
-			Registered { id: DeviceId, token: Token },
+			Registered {
+				id: DeviceId,
+				token: Token,
+			},
 			HeartbeatAck,
-			Incoming { from: DeviceId, from_addr: std::net::SocketAddr, session: SessionId, hello: Vec<u8> },
-			PeerFound { target: DeviceId, target_addr: std::net::SocketAddr, session: SessionId, answer: Vec<u8> },
-			RelayData { session: SessionId, payload: Vec<u8> },
-			Error { code: OldErrCode, message: String },
+			Incoming {
+				from: DeviceId,
+				from_addr: std::net::SocketAddr,
+				session: SessionId,
+				hello: Vec<u8>,
+			},
+			PeerFound {
+				target: DeviceId,
+				target_addr: std::net::SocketAddr,
+				session: SessionId,
+				answer: Vec<u8>,
+			},
+			RelayData {
+				session: SessionId,
+				payload: Vec<u8>,
+			},
+			Error {
+				code: OldErrCode,
+				message: String,
+			},
 		}
 
 		let decoded = decode::<OldRelayMsg>(&wire)
 			.expect("old-client ErrCode (5 variants) must decode Protocol (index 3) without error");
 		assert!(
-			matches!(decoded, OldRelayMsg::Error { code: OldErrCode::Protocol, .. }),
+			matches!(
+				decoded,
+				OldRelayMsg::Error {
+					code: OldErrCode::Protocol,
+					..
+				}
+			),
 			"expected Protocol error, got {decoded:?}"
 		);
 
