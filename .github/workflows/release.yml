@@ -4,6 +4,7 @@ name: Release
 # Conventional Commits and creates a git TAG + GitHub Release only — it does NOT
 # commit anything back to the repo (no @semantic-release/git plugin).
 on:
+  workflow_dispatch:
   push:
     branches: [main]
 
