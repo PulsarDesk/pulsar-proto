@@ -32,3 +32,6 @@ description = "Pulsar wire protocol — shared by the relay server and the deskt
 serde.workspace = true
 bincode.workspace = true
 rand.workspace = true
+# v4 relay auth: the shared `password_proof` helper (SHA-256(nonce || password)) so the
+# client and the relay derive byte-identical proofs from one definition.
+sha2 = "0.10"

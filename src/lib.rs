@@ -27,7 +27,16 @@ use std::net::SocketAddr;
 /// waiting for the loss-driven ABR to converge down. bincode is positional, so the
 /// added field is an incompatible wire change → both ends must run v3 (rebuilt
 /// together; the relay rejects a mismatched-version Register up front).
-pub const PROTOCOL_VERSION: u16 = 3;
+///
+/// v4: **relay authentication + advertised E2E policy.** [`ClientMsg::Register`]
+/// gains `auth: Option<AuthProof>`; [`RelayMsg::Registered`] gains `e2e_required`;
+/// a new [`RelayMsg::AuthRequired`] challenges a client whose registration is missing
+/// or has stale auth (it carries a per-attempt `nonce` so the password proof is never
+/// the raw password and can't be trivially replayed), and a new [`ErrCode::BadAuth`]
+/// reports a wrong credential. All additive, all behind the version gate — the relay
+/// still rejects a mismatched-version Register up front. A relay with no auth policy
+/// configured behaves exactly as v3 (no challenge; `e2e_required` = false).
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// Conservative MTU-safe datagram payload size.
 pub const MAX_DATAGRAM: usize = 1400;
@@ -131,6 +140,22 @@ impl std::fmt::Debug for Token {
 	}
 }
 
+/// Proof a client sends to satisfy a relay's authentication policy (v4). Built in
+/// response to a [`RelayMsg::AuthRequired`] challenge. The raw password is NEVER put
+/// on the (plaintext UDP) control wire: only `SHA-256(nonce || password)` is sent, so
+/// a passive observer learns neither the password nor a proof reusable under a fresh
+/// nonce. The TOTP code is a short-lived one-time value by construction.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthProof {
+	/// Echo of the challenge nonce from [`RelayMsg::AuthRequired`]. Binds this proof to
+	/// one challenge so the relay can reject a stale/forged nonce.
+	pub nonce: [u8; 16],
+	/// `SHA-256(nonce || password)` when the relay requires a password; `None` otherwise.
+	pub password: Option<[u8; 32]>,
+	/// The current TOTP (RFC 6238) code, 6–8 ASCII digits, when the relay requires 2FA.
+	pub totp: Option<String>,
+}
+
 /// A negotiated connection between two peers. Random, chosen by the requester.
 pub type SessionId = u64;
 
@@ -150,16 +175,28 @@ pub enum ErrCode {
 	/// rendezvous/handshake timeout. Appended last so existing variant indices
 	/// (bincode serializes enums by index) stay stable on the wire.
 	IncompatibleVersion,
+	/// A supplied [`AuthProof`] was wrong (bad password proof or bad TOTP) — the relay
+	/// requires authentication and this credential did not satisfy it. Distinct from
+	/// [`RelayMsg::AuthRequired`], which asks for a credential the client did not send.
+	/// Appended last (index 6) so earlier variant indices stay stable on the wire; only
+	/// v4 clients — the only ones a v4 relay ever auth-challenges — need to decode it.
+	BadAuth,
 }
 
 /// Messages sent **client → relay**.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClientMsg {
 	/// Join the relay; the relay replies with [`RelayMsg::Registered`] (assigns id + token).
+	///
+	/// `auth` is `None` on the first attempt. If the relay has an auth policy it answers
+	/// with [`RelayMsg::AuthRequired`] (carrying a challenge nonce); the client then
+	/// re-sends `Register` with `auth: Some(_)` built from that nonce. A relay with no
+	/// auth policy ignores `auth` entirely. v4 wire addition (see [`PROTOCOL_VERSION`]).
 	Register {
 		version: u16,
 		pubkey: PublicKey,
 		name: Option<String>,
+		auth: Option<AuthProof>,
 	},
 	/// Keep the registration (and the observed public address) alive.
 	Heartbeat { id: DeviceId, token: Token },
@@ -196,6 +233,13 @@ pub enum RelayMsg {
 	Registered {
 		id: DeviceId,
 		token: Token,
+		/// The relay's advertised end-to-end-encryption policy: `true` when the operator
+		/// runs the relay in E2E-required mode. Pulsar sessions are ALWAYS end-to-end
+		/// encrypted (the relay only ever forwards sealed blobs), so a compliant client
+		/// already satisfies this; the flag lets the client refuse any downgrade and lets
+		/// the UI show a "relay forces E2E" indicator. `false` on a relay with no policy.
+		/// v4 wire addition (see [`PROTOCOL_VERSION`]).
+		e2e_required: bool,
 	},
 	HeartbeatAck,
 	/// Delivered to the **target**: someone wants to connect. Includes the
@@ -229,6 +273,20 @@ pub enum RelayMsg {
 	Error {
 		code: ErrCode,
 		message: String,
+	},
+	/// The relay has an auth policy and this registration is missing (or carries a
+	/// stale) credential. Tells the client which factors are needed and hands it a fresh
+	/// challenge `nonce` to build the [`AuthProof`] with. The client prompts the user as
+	/// needed, then re-sends [`ClientMsg::Register`] with `auth: Some(_)`. Appended last
+	/// (index 6) so earlier variant indices stay stable; only v4 clients (the only ones a
+	/// v4 relay challenges) need to decode it. v4 wire addition (see [`PROTOCOL_VERSION`]).
+	AuthRequired {
+		/// The relay requires a password factor.
+		password: bool,
+		/// The relay requires a TOTP (2FA) factor.
+		totp: bool,
+		/// Per-attempt challenge nonce to fold into the password proof (and echo back).
+		nonce: [u8; 16],
 	},
 }
 
@@ -270,6 +328,20 @@ pub enum PeerMsg {
 		pubkey: PublicKey,
 		salt: [u8; 32],
 	},
+}
+
+/// The password factor of an [`AuthProof`]: `SHA-256(nonce || password)`.
+///
+/// Defined once here so the client (building the proof) and the relay (verifying it)
+/// derive byte-identical values. The raw password is never placed on the wire; only this
+/// digest is, bound to the relay's per-attempt `nonce` so a passive observer can neither
+/// recover the password nor reuse the proof under a fresh nonce.
+pub fn password_proof(nonce: &[u8; 16], password: &str) -> [u8; 32] {
+	use sha2::{Digest, Sha256};
+	let mut h = Sha256::new();
+	h.update(nonce);
+	h.update(password.as_bytes());
+	h.finalize().into()
 }
 
 /// Encode any protocol message to bytes (one datagram).
@@ -341,6 +413,17 @@ mod tests {
 				version: PROTOCOL_VERSION,
 				pubkey: [7u8; 32],
 				name: Some("Ev PC’si".into()),
+				auth: None,
+			},
+			ClientMsg::Register {
+				version: PROTOCOL_VERSION,
+				pubkey: [7u8; 32],
+				name: Some("Ev PC’si".into()),
+				auth: Some(AuthProof {
+					nonce: [9u8; 16],
+					password: Some([4u8; 32]),
+					totp: Some("123456".into()),
+				}),
 			},
 			ClientMsg::Heartbeat { id, token },
 			ClientMsg::Connect {
@@ -373,6 +456,17 @@ mod tests {
 			RelayMsg::Registered {
 				id,
 				token: Token([3u8; 16]),
+				e2e_required: false,
+			},
+			RelayMsg::Registered {
+				id,
+				token: Token([3u8; 16]),
+				e2e_required: true,
+			},
+			RelayMsg::AuthRequired {
+				password: true,
+				totp: true,
+				nonce: [5u8; 16],
 			},
 			RelayMsg::HeartbeatAck,
 			RelayMsg::Incoming {
