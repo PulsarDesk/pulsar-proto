@@ -36,7 +36,14 @@ use std::net::SocketAddr;
 /// reports a wrong credential. All additive, all behind the version gate — the relay
 /// still rejects a mismatched-version Register up front. A relay with no auth policy
 /// configured behaves exactly as v3 (no challenge; `e2e_required` = false).
-pub const PROTOCOL_VERSION: u16 = 4;
+///
+/// v5: **durable access keys.** Once a device satisfies the relay's interactive factors,
+/// the relay issues [`RelayMsg::Registered::auth_key`]; the client stores it and replays
+/// it in [`AuthProof::key`] on every later registration, so the password/2FA prompt
+/// appears on a device's FIRST connection and never again — until the operator changes
+/// the relay's credentials, which invalidates every key at once. Additive and
+/// version-gated like v4.
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// Conservative MTU-safe datagram payload size.
 pub const MAX_DATAGRAM: usize = 1400;
@@ -148,12 +155,18 @@ impl std::fmt::Debug for Token {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthProof {
 	/// Echo of the challenge nonce from [`RelayMsg::AuthRequired`]. Binds this proof to
-	/// one challenge so the relay can reject a stale/forged nonce.
+	/// one challenge so the relay can reject a stale/forged nonce. Unused (and ignored)
+	/// when `key` alone is presented — an access key is not challenge-bound.
 	pub nonce: [u8; 16],
 	/// `SHA-256(nonce || password)` when the relay requires a password; `None` otherwise.
 	pub password: Option<[u8; 32]>,
 	/// The current TOTP (RFC 6238) code, 6–8 ASCII digits, when the relay requires 2FA.
 	pub totp: Option<String>,
+	/// A previously issued **access key** ([`RelayMsg::Registered::auth_key`]). Presented
+	/// on every later registration so the user is asked for their password/2FA exactly
+	/// once per device. Tried before the interactive factors: when it validates, the relay
+	/// registers the device without a challenge. v5 wire addition.
+	pub key: Option<String>,
 }
 
 /// A negotiated connection between two peers. Random, chosen by the requester.
@@ -240,6 +253,16 @@ pub enum RelayMsg {
 		/// the UI show a "relay forces E2E" indicator. `false` on a relay with no policy.
 		/// v4 wire addition (see [`PROTOCOL_VERSION`]).
 		e2e_required: bool,
+		/// A durable **access key** the client stores and presents in every later
+		/// [`AuthProof::key`], so the user is asked for their password/2FA only on the
+		/// FIRST connection from this device. Issued only when the device just satisfied
+		/// an interactive factor on an authenticated relay; `None` on an open relay and
+		/// `None` when this registration already authenticated with a key (the client
+		/// keeps the one it has). The key is bound to the device's public key and to the
+		/// relay's current credentials, so it stops working the moment the operator
+		/// changes them — and only for that device if the key leaks.
+		/// v5 wire addition (see [`PROTOCOL_VERSION`]).
+		auth_key: Option<String>,
 	},
 	HeartbeatAck,
 	/// Delivered to the **target**: someone wants to connect. Includes the
@@ -423,6 +446,19 @@ mod tests {
 					nonce: [9u8; 16],
 					password: Some([4u8; 32]),
 					totp: Some("123456".into()),
+					key: None,
+				}),
+			},
+			ClientMsg::Register {
+				version: PROTOCOL_VERSION,
+				pubkey: [7u8; 32],
+				name: None,
+				// A returning device: the stored access key alone, no interactive factors.
+				auth: Some(AuthProof {
+					nonce: [0u8; 16],
+					password: None,
+					totp: None,
+					key: Some("0000000000000000deadbeef".into()),
 				}),
 			},
 			ClientMsg::Heartbeat { id, token },
@@ -457,11 +493,13 @@ mod tests {
 				id,
 				token: Token([3u8; 16]),
 				e2e_required: false,
+				auth_key: None,
 			},
 			RelayMsg::Registered {
 				id,
 				token: Token([3u8; 16]),
 				e2e_required: true,
+				auth_key: Some("issued-access-key".into()),
 			},
 			RelayMsg::AuthRequired {
 				password: true,
