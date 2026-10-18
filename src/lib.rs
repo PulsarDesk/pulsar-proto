@@ -76,7 +76,7 @@ impl DeviceId {
 
 	/// A uniformly random valid id.
 	pub fn random(rng: &mut impl rand::Rng) -> Self {
-		Self(rng.gen_range(Self::MIN..=Self::MAX))
+		Self(rand::RngExt::random_range(rng, Self::MIN..=Self::MAX))
 	}
 
 	/// Grouped display form: `482 913 056`. Derived `Deserialize` performs no range
@@ -116,7 +116,7 @@ impl std::fmt::Debug for DeviceId {
 pub struct Token(pub [u8; 16]);
 
 impl Token {
-	pub fn random(rng: &mut impl rand::RngCore) -> Self {
+	pub fn random(rng: &mut impl rand::Rng) -> Self {
 		let mut b = [0u8; 16];
 		rng.fill_bytes(&mut b);
 		Self(b)
@@ -381,6 +381,26 @@ pub fn decode<T: for<'de> Deserialize<'de>>(buf: &[u8]) -> Result<T, bincode::Er
 mod tests {
 	use super::*;
 
+	fn hex(b: &[u8]) -> String {
+		b.iter().map(|x| format!("{x:02x}")).collect()
+	}
+
+	/// Known-answer test: `password_proof` is on the wire (client builds, relay verifies),
+	/// so its bytes must never drift across a sha2 upgrade. Expected values computed
+	/// independently (Python `hashlib.sha256(nonce + password)`).
+	#[test]
+	fn password_proof_known_answer() {
+		let nonce: [u8; 16] = std::array::from_fn(|i| i as u8);
+		assert_eq!(
+			hex(&password_proof(&nonce, "correct horse ✓")),
+			"e2633b79d3c273c042733849cb7c690ad59938e7defce5597c33028e08951dd7"
+		);
+		assert_eq!(
+			hex(&password_proof(&[0xff; 16], "")),
+			"5ac6a5945f16500911219129984ba8b387a06f24fe383ce4e81a73294065461b"
+		);
+	}
+
 	#[test]
 	fn device_id_groups_and_parses_round_trip() {
 		let id = DeviceId::new(482_913_056).unwrap();
@@ -409,7 +429,7 @@ mod tests {
 
 	#[test]
 	fn random_device_id_is_always_nine_digits() {
-		let mut rng = rand::thread_rng();
+		let mut rng = rand::rng();
 		for _ in 0..1000 {
 			let id = DeviceId::random(&mut rng);
 			assert_eq!(id.0.to_string().len(), 9);
@@ -419,7 +439,7 @@ mod tests {
 
 	#[test]
 	fn token_is_random_and_hex_is_32_chars() {
-		let mut rng = rand::thread_rng();
+		let mut rng = rand::rng();
 		let a = Token::random(&mut rng);
 		let b = Token::random(&mut rng);
 		assert_ne!(a.0, b.0, "two random tokens collided");
@@ -428,7 +448,7 @@ mod tests {
 
 	#[test]
 	fn client_messages_round_trip() {
-		let mut rng = rand::thread_rng();
+		let mut rng = rand::rng();
 		let id = DeviceId::random(&mut rng);
 		let token = Token::random(&mut rng);
 		let msgs = vec![
