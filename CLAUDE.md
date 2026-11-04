@@ -18,6 +18,9 @@ See the umbrella `../CLAUDE.md` for the product.
   prompted only on a device's first connection. `ErrCode::BadAuth` = wrong credential.
 - `PeerMsg` (peer↔peer, relay never sees it): `Punch`, `PunchAck`, `Data`,
   `KeepAlive`, `Hello/HelloAck{pubkey,salt}` (direct-IP, relay-less path).
+  `Hello2/HelloAck2{pubkey,salt,eph,caps}` = forward-secret direct-IP handshake, appended
+  after the v1 variants (wire-additive, no version bump; initiators also send legacy
+  `Hello`). `CAP_PAKE` caps bit = peer speaks the PAKE session auth.
 - Constants: `MAX_DATAGRAM` 1400, `DEFAULT_RELAY_PORT` 21116,
   `DEFAULT_NODE_PORT` 21118. `Token` compares constant-time (`ct_eq`).
 

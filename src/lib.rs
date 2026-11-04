@@ -351,7 +351,33 @@ pub enum PeerMsg {
 		pubkey: PublicKey,
 		salt: [u8; 32],
 	},
+	/// Direct-IP handshake with **forward secrecy**: like [`PeerMsg::Hello`] plus a fresh
+	/// per-session ephemeral X25519 public key (`eph`) and a capability bitfield (`caps`,
+	/// see [`CAP_PAKE`]). Appended after the v1 variants, so it is wire-additive: an old
+	/// peer fails to decode it and ignores the datagram, so initiators also send the
+	/// legacy `Hello` for old responders.
+	Hello2 {
+		session: SessionId,
+		pubkey: PublicKey,
+		salt: [u8; 32],
+		eph: PublicKey,
+		caps: u8,
+	},
+	/// Reply to [`PeerMsg::Hello2`] — the responder's static key, salt, ephemeral key, caps.
+	HelloAck2 {
+		session: SessionId,
+		pubkey: PublicKey,
+		salt: [u8; 32],
+		eph: PublicKey,
+		caps: u8,
+	},
 }
+
+/// Handshake capability bit: the peer speaks the PAKE session-auth handshake (the
+/// one-time / connect password never travels, not even inside the encrypted session).
+/// Carried in [`PeerMsg::Hello2`]/[`PeerMsg::HelloAck2`] and in the relay-path handshake
+/// blob extension (see pulsar-core `connection`).
+pub const CAP_PAKE: u8 = 0b0000_0001;
 
 /// The password factor of an [`AuthProof`]: `SHA-256(nonce || password)`.
 ///
@@ -657,9 +683,82 @@ mod tests {
 				pubkey: [8u8; 32],
 				salt: [4u8; 32],
 			},
+			PeerMsg::Hello2 {
+				session: 1,
+				pubkey: [9u8; 32],
+				salt: [3u8; 32],
+				eph: [7u8; 32],
+				caps: CAP_PAKE,
+			},
+			PeerMsg::HelloAck2 {
+				session: 1,
+				pubkey: [8u8; 32],
+				salt: [4u8; 32],
+				eph: [6u8; 32],
+				caps: CAP_PAKE,
+			},
 		];
 		for m in msgs {
 			assert_eq!(decode::<PeerMsg>(&encode(&m)).unwrap(), m);
 		}
+	}
+
+	/// `Hello2`/`HelloAck2` are appended AFTER the v1 variants, so the existing variant
+	/// indices (what an old peer decodes) are unchanged — the change is wire-additive.
+	#[test]
+	fn hello2_is_wire_additive() {
+		#[derive(Debug, PartialEq, Serialize, Deserialize)]
+		enum OldPeerMsg {
+			Punch {
+				session: SessionId,
+				seq: u32,
+			},
+			PunchAck {
+				session: SessionId,
+				seq: u32,
+			},
+			Data {
+				session: SessionId,
+				seq: u64,
+				payload: Vec<u8>,
+			},
+			KeepAlive {
+				session: SessionId,
+			},
+			Hello {
+				session: SessionId,
+				pubkey: PublicKey,
+				salt: [u8; 32],
+			},
+			HelloAck {
+				session: SessionId,
+				pubkey: PublicKey,
+				salt: [u8; 32],
+			},
+		}
+		let legacy = encode(&PeerMsg::Hello {
+			session: 5,
+			pubkey: [1u8; 32],
+			salt: [2u8; 32],
+		});
+		assert_eq!(
+			decode::<OldPeerMsg>(&legacy).unwrap(),
+			OldPeerMsg::Hello {
+				session: 5,
+				pubkey: [1u8; 32],
+				salt: [2u8; 32]
+			}
+		);
+		let v2 = encode(&PeerMsg::Hello2 {
+			session: 5,
+			pubkey: [1u8; 32],
+			salt: [2u8; 32],
+			eph: [3u8; 32],
+			caps: CAP_PAKE,
+		});
+		assert!(
+			decode::<OldPeerMsg>(&v2).is_err(),
+			"old peers must ignore Hello2"
+		);
 	}
 }
