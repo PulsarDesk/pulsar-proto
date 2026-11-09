@@ -31,6 +31,9 @@ description = "Pulsar wire protocol — shared by the relay server and the deskt
 [dependencies]
 serde.workspace = true
 bincode.workspace = true
+# `PeerMsg::Data.payload` as a byte string: serde's default `Vec<u8>` visits every byte one by
+# one (measured: ~7 % of a streaming client's CPU on an RK3588). bincode encodes both the same.
+serde_bytes = "0.11"
 rand.workspace = true
 # v4 relay auth: the shared `password_proof` helper (SHA-256(nonce || password)) so the
 # client and the relay derive byte-identical proofs from one definition.

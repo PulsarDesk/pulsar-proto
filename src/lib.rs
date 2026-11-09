@@ -331,6 +331,9 @@ pub enum PeerMsg {
 	Data {
 		session: SessionId,
 		seq: u64,
+		// Bulk bytes, not a per-element sequence; the bincode wire format is unchanged
+		// (`data_payload_wire_format_is_unchanged`).
+		#[serde(with = "serde_bytes")]
 		payload: Vec<u8>,
 	},
 	KeepAlive {
@@ -406,6 +409,46 @@ pub fn decode<T: for<'de> Deserialize<'de>>(buf: &[u8]) -> Result<T, bincode::Er
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// `serde_bytes` on `PeerMsg::Data.payload` must not change a single byte on the wire, or
+	/// peers on different versions would stop understanding each other.
+	#[test]
+	fn data_payload_wire_format_is_unchanged() {
+		#[derive(Serialize, Deserialize, PartialEq, Debug)]
+		enum Old {
+			_V0,
+			Data {
+				session: SessionId,
+				seq: u64,
+				payload: Vec<u8>,
+			},
+		}
+		let payload: Vec<u8> = (0..=255u8).cycle().take(1500).collect();
+		let session: SessionId = Default::default();
+		let new = encode(&PeerMsg::Data {
+			session,
+			seq: 42,
+			payload: payload.clone(),
+		});
+		// Same variant index as in PeerMsg, so the encodings are directly comparable.
+		let idx = u32::from_le_bytes(new[0..4].try_into().unwrap());
+		let mut old = encode(&Old::Data {
+			session,
+			seq: 42,
+			payload: payload.clone(),
+		});
+		old[0..4].copy_from_slice(&idx.to_le_bytes());
+		assert_eq!(new, old);
+		match decode::<PeerMsg>(&old).unwrap() {
+			PeerMsg::Data {
+				seq, payload: p, ..
+			} => {
+				assert_eq!(seq, 42);
+				assert_eq!(p, payload);
+			}
+			other => panic!("decoded {other:?}"),
+		}
+	}
 
 	fn hex(b: &[u8]) -> String {
 		b.iter().map(|x| format!("{x:02x}")).collect()
