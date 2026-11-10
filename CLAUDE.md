@@ -20,7 +20,7 @@ See the umbrella `../CLAUDE.md` for the product.
   `KeepAlive`, `Hello/HelloAck{pubkey,salt}` (direct-IP, relay-less path).
   `Hello2/HelloAck2{pubkey,salt,eph,caps}` = forward-secret direct-IP handshake, appended
   after the v1 variants (wire-additive, no version bump; initiators also send legacy
-  `Hello`). `CAP_PAKE` caps bit = peer speaks the PAKE session auth.
+  `Hello`). `CAP_PAKE` caps bit = peer speaks the PAKE session auth; `CAP_TOTP` = it can answer a host's 2FA (TOTP) challenge.
 - Constants: `MAX_DATAGRAM` 1400, `DEFAULT_RELAY_PORT` 21116,
   `DEFAULT_NODE_PORT` 21118. `Token` compares constant-time (`ct_eq`).
 

@@ -382,6 +382,12 @@ pub enum PeerMsg {
 /// blob extension (see pulsar-core `connection`).
 pub const CAP_PAKE: u8 = 0b0000_0001;
 
+/// Handshake capability bit: the peer can answer a host's two-factor (TOTP) challenge
+/// after the password step (pulsar-core `Msg::NeedTotp` / `Msg::Totp`). A host with 2FA
+/// enabled refuses a client without it instead of leaving it waiting on a message it
+/// cannot read.
+pub const CAP_TOTP: u8 = 0b0000_0010;
+
 /// The password factor of an [`AuthProof`]: `SHA-256(nonce || password)`.
 ///
 /// Defined once here so the client (building the proof) and the relay (verifying it)
